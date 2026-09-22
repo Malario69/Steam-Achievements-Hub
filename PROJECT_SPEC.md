@@ -2,11 +2,11 @@
 
 ## 1. Product vision
 
-Steam Achievements Hub is a web application for achievement hunters. It combines official Steam player/achievement data with a local historical database and external hunting metadata to answer four questions:
+NextUnlock is a web application for achievement hunters. It combines official Steam player/achievement data fetched on demand with persistent NextUnlock-owned roadmap data and external hunting metadata to answer core hunting questions:
 
 1. What games and achievements does the user currently have?
-2. Which games are truly complete, and which completions count toward Steam profile showcases?
-3. What changed since the previous synchronization?
+2. Which achievements are open right now?
+3. How can those open achievements be turned into an efficient hunting roadmap?
 4. What should the user hunt next?
 
 The application should be useful both as a personal dashboard and, later, as a multi-user public web service.
@@ -16,7 +16,7 @@ The application should be useful both as a personal dashboard and, later, as a m
 ## 2. Core product principles
 
 - Steam facts and locally derived data must be distinguishable.
-- Historical states must never be destroyed during synchronization.
+- User-specific Steam state is not a permanent historical datastore by default; persist only what a concrete NextUnlock feature requires.
 - A game can be 100% complete locally while not being eligible for Steam profile showcases.
 - External metadata such as difficulty and completion time must include source/provenance and freshness.
 - Recommendations should initially be explainable and deterministic rather than opaque AI output.
@@ -44,13 +44,11 @@ The sync process should:
 1. Resolve the signed-in Steam user.
 2. Retrieve owned games visible to the application.
 3. Upsert global game records by Steam AppID.
-4. Upsert the user's ownership/playtime state.
-5. For games with achievements, retrieve/cache the achievement schema.
-6. Retrieve the user's achievement state.
-7. Calculate completion statistics.
-8. Persist an immutable synchronization snapshot.
-9. Compare the new snapshot with the prior snapshot.
-10. Emit derived events such as `PERFECTION_GAINED`, `PERFECTION_LOST`, and `ACHIEVEMENT_SCHEMA_CHANGED`.
+4. Retrieve/cache global game and achievement schema data where useful.
+5. Retrieve the user's current achievement state on demand.
+6. Calculate completion statistics for the current view.
+7. Persist only NextUnlock-owned data required by features such as roadmaps.
+8. Do not persist broad historical library/playtime/achievement snapshots unless an explicitly approved feature requires a minimal dataset.
 
 The web request should enqueue work; large Steam libraries must not be processed synchronously inside one HTTP request.
 
@@ -68,9 +66,9 @@ Show at minimum:
 - perfect games according to local completion
 - perfect games eligible for Steam profile/showcase counting
 - games marked as profile-feature-limited
-- recently completed games
-- lost perfect games
-- synchronization status and last successful sync
+- current completion status
+- current roadmap status where available
+- data freshness / last successful refresh
 
 ### 3.4 Game detail page
 
@@ -89,26 +87,16 @@ Each game should show:
 - hunting flags such as multiplayer, online, missable, grind, collectibles, difficulty-specific, DLC, NG+
 - Steam profile eligibility state
 - recommended guides
-- history of completion changes
+- saved NextUnlock roadmap/progress where available
 - source/provenance for enriched metadata
 
-### 3.5 Perfect-game history
+### 3.5 Historical Steam-state features
 
-The system must detect the following scenario:
+The default architecture does **not** persist broad historical user Steam state.
 
-- At sync N: unlocked achievements == total achievements.
-- At sync N+1: the achievement schema contains additional achievements and the user is no longer complete.
+If a future feature such as long-term lost-perfect tracking requires historical Steam-derived user data, it must first receive an explicit architecture/privacy review. The implementation must define the minimum required fields, retention, deletion behavior and user impact before adding persistence.
 
-Store both snapshots and an explicit event. The previous completed state must remain queryable.
-
-Useful event types:
-
-- `PERFECTION_GAINED`
-- `PERFECTION_LOST`
-- `ACHIEVEMENTS_ADDED`
-- `ACHIEVEMENTS_REMOVED`
-- `ACHIEVEMENT_SCHEMA_CHANGED`
-- `PROFILE_ELIGIBILITY_CHANGED`
+Roadmap refresh should prefer comparing saved NextUnlock roadmap state with current Steam data fetched on demand rather than building a general-purpose Steam history database.
 
 ### 3.6 Profile eligibility
 
@@ -234,11 +222,8 @@ This is conceptual; exact Prisma naming may change during implementation.
 
 - id
 - steamId64 (unique)
-- displayName cache
-- avatar cache
 - createdAt
-- updatedAt
-- lastSuccessfulSyncAt
+- lastLoginAt
 
 ### Game
 
@@ -250,16 +235,6 @@ This is conceptual; exact Prisma naming may change during implementation.
 - profileEligibilityCheckedAt
 - createdAt
 - updatedAt
-
-### UserGame
-
-- id
-- userId
-- gameId
-- playtimeMinutes
-- firstSeenAt
-- lastSeenAt
-- currentlyVisibleInLibrary
 
 ### AchievementDefinition
 
@@ -282,34 +257,6 @@ Unique key: `(gameId, apiName)`.
 - achievementCount
 - capturedAt
 
-### UserAchievement
-
-Represents the latest known state for fast reads.
-
-- id
-- userId
-- achievementDefinitionId
-- unlocked
-- unlockedAt
-- lastObservedAt
-
-### UserGameSnapshot
-
-Immutable snapshot per completed sync.
-
-- id
-- userId
-- gameId
-- syncRunId
-- unlockedCount
-- totalCount
-- completionPercent
-- isPerfect
-- isSteamProfileEligiblePerfect
-- playtimeMinutes
-- schemaHash
-- capturedAt
-
 ### SyncRun
 
 - id
@@ -321,17 +268,6 @@ Immutable snapshot per completed sync.
 - errorSummary
 - gamesProcessed
 - gamesTotal
-
-### CompletionEvent
-
-- id
-- userId
-- gameId
-- type
-- previousSnapshotId
-- currentSnapshotId
-- metadata JSON
-- occurredAt
 
 ### HuntingMetadata
 
@@ -462,13 +398,13 @@ Additional provider secrets must follow the same rule.
 - completion calculations
 - game detail page
 
-### Milestone 3 — History and lost perfects
+### Milestone 3 — Roadmaps
 
-- immutable snapshots
-- schema hashing
-- diff engine
-- completion events
-- lost-perfect UI
+- roadmap generation from currently open achievements
+- persistent roadmap storage
+- manual progress/checkmarks
+- refresh detection without silently overwriting user progress
+- minimal snapshot data only where required for roadmap refresh
 
 ### Milestone 4 — Profile eligibility
 
@@ -496,7 +432,7 @@ Additional provider secrets must follow the same rule.
 - filters/explanations
 - store discovery recommendations
 
-### Milestone 8 — Production hardening
+### Milestone 8 — Production hardening and security gate
 
 - privacy/export/delete flows
 - observability
@@ -521,4 +457,15 @@ Additional provider secrets must follow the same rule.
 
 ## 12. Definition of success for the first usable release
 
-A user can sign in with Steam, manually synchronize a public/accessible library, inspect per-game achievement progress, see accurate local perfect-game counts, and later synchronize again to be told when a previously perfect game is no longer perfect because its achievement schema changed.
+A user can sign in with Steam, inspect currently accessible library/achievement data, create and persist an efficient achievement roadmap, keep manual roadmap progress, and refresh current Steam state without silently overwriting saved roadmap progress.
+
+
+---
+
+## 13. Binding security and data-minimization decision
+
+The documents in `docs/security/` are the authoritative security baseline for authentication, data persistence, secrets, deployment, backups, security testing and incident response.
+
+For the current architecture, the only Steam user datum intentionally persisted long-term is the verified SteamID64. User-specific library, playtime and achievement state are fetched on demand or held only in short-lived caches unless a future feature receives an explicit documented architecture/privacy approval for additional minimal persistence.
+
+If this specification conflicts with `docs/security/`, the stricter and more recent documented security/data-minimization decision must be resolved before implementation rather than silently choosing the broader data model.
