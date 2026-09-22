@@ -1,8 +1,8 @@
 # CLAUDE.md — Steam Achievements Hub
 
-This repository contains a security-sensitive web application that processes Steam identities, game-library data, achievement progress, and locally persisted history.
+This repository contains a security-sensitive web application that processes Steam identities and current Steam library/achievement data while intentionally minimizing long-term persistence.
 
-Read `PROJECT_SPEC.md` before making architectural changes.
+Read `PROJECT_SPEC.md` and all files under `docs/security/` before making architectural, authentication, persistence, deployment or security-sensitive changes.
 
 ## 1. Non-negotiable security rules
 
@@ -11,7 +11,7 @@ Read `PROJECT_SPEC.md` before making architectural changes.
 3. NEVER ask end users to provide their Steam Web API key.
 4. Steam authentication must use Steam OpenID; the application must never collect Steam passwords.
 5. Validate authorization on every user-scoped read/write operation. Never trust a user id/SteamID from the browser without matching it to the authenticated session.
-6. Validate all external/provider responses at runtime before persisting them.
+6. Validate all external/provider responses at runtime before using or caching them. Do not persist user-specific Steam state unless explicitly allowed by `docs/security/DATA-INVENTORY.md`.
 7. Do not log cookies, session identifiers, API keys, Authorization headers, or full URLs containing secrets.
 8. Avoid SSRF: do not fetch arbitrary user-controlled URLs. External hosts/providers must be allow-listed by adapter implementation.
 9. Use secure defaults for cookies/sessions (`HttpOnly`, `Secure` in production, suitable `SameSite`).
@@ -63,15 +63,15 @@ Required invariants:
 
 - sync is idempotent
 - retries do not create corrupt duplicate history
-- historical successful snapshots are immutable
-- a failed sync does not overwrite `lastSuccessfulSyncAt`
-- partial provider failures do not destroy valid Steam data
+- do not create broad persistent historical Steam user snapshots by default
+- a failed refresh must not corrupt saved NextUnlock-owned data
+- partial provider failures do not destroy valid NextUnlock data
 - duplicate concurrent full syncs for one user are prevented/coalesced
 - provider calls have timeouts
 - transient failures use bounded exponential backoff with jitter where appropriate
 - obey provider/API rate limits
 
-Never delete old completion snapshots as part of normal synchronization.
+Do not create or retain broad historical user Steam-state snapshots unless an explicitly approved feature and the data inventory allow them.
 
 ## 4. Achievement schema rules
 
@@ -96,7 +96,7 @@ Keep these concepts separate:
 
 Do not collapse them into one boolean.
 
-A previously perfect game becoming imperfect because new achievements were added must preserve the old perfect snapshot and create a `PERFECTION_LOST` event with useful diff metadata.
+Do not implement long-term lost-perfect history by silently adding persistent user achievement snapshots. Such a feature requires an explicit data-minimization/privacy decision first.
 
 ## 6. External metadata provenance
 
@@ -163,7 +163,7 @@ Before changing the schema:
 
 - consider uniqueness constraints
 - consider indexes for common user/game/AppID queries
-- preserve immutable history
+- preserve NextUnlock-owned user data while respecting the data-minimization policy
 - avoid destructive migration paths unless explicitly approved
 
 Never silently drop data/history.
@@ -246,3 +246,18 @@ A task is not complete merely because it compiles. Relevant tasks should have:
 - documentation when required
 - lint/typecheck/test success
 - no accidental credentials or generated junk committed
+
+
+## 18. Binding data-minimization rule
+
+The files in `docs/security/` are binding for security-sensitive implementation decisions.
+
+For the current design:
+- persist SteamID64 as the only long-term Steam user datum
+- use an internal user ID for all NextUnlock-owned relations
+- do not persist Steam display name/avatar, owned-game history, playtime history, user achievement history or raw user-specific Steam API responses by default
+- fetch user-specific Steam state on demand and use short-lived caches only where justified
+- never introduce broader persistence merely for convenience
+- any future feature requiring additional persistent Steam-derived user data requires an explicit documented architecture/privacy review before implementation
+
+Security-sensitive code that conflicts with these rules must not be implemented as a workaround.
